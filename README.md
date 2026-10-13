@@ -1,220 +1,67 @@
-# CFA State Incidents to PagerMon Bridge (`pmon-input`)
+# PagerMon for GoDaddy Node.js Hosting
 
-A reliable, lightweight Python bridge that polls the Country Fire Authority (CFA) Victoria State Incidents feed, extracts and validates dispatch messages, deduplicates records persistently via SQLite, and injects new messages into a local [PagerMon](https://github.com/pagermon/pagermon) instance via its REST API.
+This branch packages upstream [pagermon/pagermon](https://github.com/pagermon/pagermon) 0.3.13-beta as one root-level Node.js app. It is separate from pmon-input on the repository's main branch. Upstream's Unlicense is retained in LICENSE.
 
----
+## Install using GitHub
 
-## Quick Start
+1. In GoDaddy **Node.js Hosting**, choose **Connect GitHub**.
+2. Select repository **medrescuetech/pmon-input**, branch **godaddy-pagermon**.
+3. Select **I need to add secrets for my app to boot**. Add:
 
-Start from a fresh server:
+| Secret | Value |
+| --- | --- |
+| `PAGERMON_ADMIN_PASSWORD` | Your chosen strong password, at least 12 characters |
+| `PAGERMON_API_KEY` | Your chosen random key, at least 32 characters |
+| `PAGERMON_ADMIN_USER` | Optional; defaults to `admin` |
 
-```bash
-git clone https://github.com/agillam69/pmon-input.git
-cd pmon-input
-chmod +x scripts/install-pm2.sh
-./scripts/install-pm2.sh
+4. Select **Import & Deploy**. GoDaddy installs dependencies, runs `npm run build`, then `npm start`.
+5. Open the preview URL. Sign in as `admin` (or your chosen username) using the password you set.
+6. Check `/health`: it should return `{"status":"ok"}`.
+7. Before publishing, request `/assets/pagermon-private/config.json`, `/assets/pagermon-private/messages.db` and `/assets/pagermon-private/sessions.db`. Each must return **404**. The app denies the entire `/assets` URL prefix. Do not publish if a hosting-level static handler bypasses that denial; use a private persistent volume through `PAGERMON_DATA_DIR` instead.
+8. Publish when the preview checks pass. Set/check these secrets for production too if GoDaddy separates preview and live secrets.
+
+GoDaddy documentation: [app requirements](https://docs.developer.commerce.godaddy.com/en/docs/api-users/hosting/app-requirements), [GitHub import and persistent storage](https://www.godaddy.com/en-au/help/deploy-my-loveable-app-with-godaddy-nodejs-hosting-42981).
+
+## Connect your receiver
+
+Keep your SDR/decoder on your Raspberry Pi or other receiving computer. GoDaddy hosts the web server, not USB radio hardware. Use your HTTPS site URL and the API key above in the existing PagerMon client configuration. The message endpoint is `POST /api/messages` (also `/post/messages`). For example, from a shell where `PAGERMON_API_KEY` is set:
+
+```sh
+curl --fail-with-body -X POST 'https://YOUR-SITE/api/messages' \
+  -H 'Content-Type: application/json' \
+  -H "apikey: $PAGERMON_API_KEY" \
+  --data '{"address":"1234567","message":"Receiver connectivity check","source":"test"}'
 ```
 
-Then open the web UI at `http://<server-ip>:8585` and set your **PagerMon API key**.
+Message retrieval requires login/API authentication by default. Existing PagerMon aliases, users, settings and plugins remain available. Notification plugins are inherited legacy integrations; test each provider before depending on it.
 
-On Windows:
+## Storage, updates and backups
 
-```powershell
-git clone https://github.com/agillam69/pmon-input.git
-Set-Location pmon-input
-.\scripts\install.ps1
+The default data directory is `public/assets/pagermon-private`, GoDaddy's documented persistent-assets area. It contains configuration (including API keys), `messages.db`, `sessions.db`, configuration backups and rotating logs. This directory is excluded from GitHub and denied by Express. Preview and production may use separate storage; do not assume preview data migrates to live.
+
+`PAGERMON_DATA_DIR` can override this path with a private persistent directory offered by your hosting plan. Do not choose an ephemeral directory. The process changes its working directory to the app root and uses absolute database paths, avoiding SQLITE_CANTOPEN errors caused by startup locations.
+
+Credentials are used only when creating a fresh configuration/database. Changing an environment password later does not reset an existing account; use the user manager. API keys are managed in PagerMon settings after initial setup.
+
+Use GoDaddy **Pull from GitHub** to update this branch, check the preview, then publish. Do not replace or commit the data directory. Stop the app before copying the full data directory for a consistent SQLite backup. Store backups privately; they contain credentials and message data. To migrate an existing installation, stop both apps and transfer its database and config, preserving this version's absolute database path; back up before any migration.
+
+## Local run
+
+Use Node.js 20, 22 or 24:
+
+```sh
+npm ci --omit=dev --omit=optional
+npm run build
+# Set PAGERMON_ADMIN_PASSWORD and PAGERMON_API_KEY in your environment first.
+npm start
 ```
 
----
+`PORT` is supplied by GoDaddy (defaults to 3000 locally), listening on `0.0.0.0`. `TRUST_PROXY_HOPS` defaults to 1; adjust only to match the actual proxy chain. Secure cookies follow the forwarded HTTPS scheme.
 
-## Architecture & Data Flow
+This is a hosting compatibility port of legacy PagerMon, not a complete dependency/security modernization. Validate live HTTPS, static-data blocking, WebSocket/polling updates, and persistence after a GoDaddy redeployment before moving your receiver. GoDaddy deployment itself has not been tested from this workspace.
 
-```
-+-------------------------------------------------------------+
-| CFA State Incidents Live Webpage                            |
-| https://mazzanet.net.au/cfa/?reg=state&magickey=cfastream   |
-+-------------------------------------------------------------+
-                              │
-                              │ Polled (every 20s default)
-                              ▼
-+-------------------------------------------------------------+
-| Fetcher Module (src/cfa_pagermon_bridge/fetcher.py)         |
-| - Connect & Read timeouts (5s / 15s)                        |
-| - Exponential backoff + jitter on failure                   |
-| - 2 MB max response size limit                              |
-+-------------------------------------------------------------+
-                              │
-                              │ HTML content
-                              ▼
-+-------------------------------------------------------------+
-| Parser Module (src/cfa_pagermon_bridge/parser.py)           |
-| - Extracts <strong> dispatch lines                          |
-| - Normalizes whitespace & decodes HTML entities             |
-| - Strict regex validation: (ID) HH:MM:SS YYYY-MM-DD ... [ID]|
-| - Ignores headings, weather, non-matching identifiers       |
-+-------------------------------------------------------------+
-                              │
-                              │ Validated Dispatches
-                              ▼
-+-------------------------------------------------------------+
-| SQLite Store (src/cfa_pagermon_bridge/store.py)             |
-| - Deduplication key: SHA-256(normalized_message)            |
-| - State machine: pending -> delivered / dead_letter         |
-| - Survives service restarts without duplicates              |
-+-------------------------------------------------------------+
-                              │
-                              │ Pending messages (oldest first)
-                              ▼
-+-------------------------------------------------------------+
-| PagerMon Delivery Adapter (src/cfa_pagermon_bridge/pagermon)|
-| - POST /api/messages                                        |
-| - Headers: apikey, Content-Type: application/json           |
-| - Payload: address (9990001), message, datetime, source     |
-+-------------------------------------------------------------+
-                              │
-                              │ HTTP 200 OK
-                              ▼
-+-------------------------------------------------------------+
-| Local PagerMon Instance (http://127.0.0.1:3000)             |
-+-------------------------------------------------------------+
-```
+## Validation
 
----
+`npm test` runs an isolated smoke test with temporary credentials and storage. Verified on Node.js 24: database migrations, health, UI, private-data denial, unauthorized API rejection, authenticated ingestion, admin login and configuration/message/session persistence after restart. The test deletes its temporary data on completion.
 
-## Features
-
-- **Robust HTML Parsing:** Strict validation matching opening `(ID)` and closing `[ID]` brigade tags. Ignores weather updates, table headers, and malformed snippets.
-- **Persistent Deduplication:** Uses SHA-256 hashes stored in SQLite with WAL mode to guarantee zero duplicate messages across service restarts.
-- **Resilient Delivery:** Automatically retries temporary network timeouts and 5xx errors with exponential backoff and jitter. Non-retryable errors (e.g. 401 Unauthorized) fail fast and log diagnostics.
-- **Dry-Run & Check Modes:** Complete built-in diagnostics (`--check`, `--dry-run`) to test fetching, parsing, and connectivity without injecting test data into PagerMon.
-- **Dual-Platform Service Support:** Ready-to-use PM2 configuration for Windows and systemd unit for Linux.
-
----
-
-## Configuration Reference
-
-Configuration is loaded from environment variables or a `.env` file.
-
-| Variable | Default | Description |
-| :--- | :--- | :--- |
-| `CFA_SOURCE_URL` | `https://mazzanet.net.au/cfa/?reg=state&magickey=cfastream` | Live CFA incident feed URL |
-| `POLL_INTERVAL_SECONDS` | `20` | Interval between page fetches (seconds) |
-| `HTTP_CONNECT_TIMEOUT_SECONDS`| `5` | Connection timeout for HTTP requests |
-| `HTTP_READ_TIMEOUT_SECONDS` | `15` | Read timeout for HTTP requests |
-| `MAX_RESPONSE_BYTES` | `2097152` (2 MB) | Maximum accepted HTTP response size |
-| `USER_AGENT` | `CFA-PagerMon-Bridge/1.0` | User-Agent string sent to source |
-| `PAGERMON_BASE_URL` | `http://127.0.0.1:3000` | Base URL of the local PagerMon server |
-| `PAGERMON_API_KEY` | `replace_me` | PagerMon API key (from `server/config/config.json`) |
-| `PAGERMON_ADDRESS` | `9990001` | Dedicated capcode / address for CFA dispatches |
-| `PAGERMON_SOURCE` | `mazzanet-cfa` | Source identifier tag in PagerMon |
-| `STATE_DB_PATH` | `data/state.sqlite3` | Location of bridge's SQLite database |
-| `LOG_LEVEL` | `INFO` | Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
-| `MAX_DELIVERY_ATTEMPTS` | `20` | Max attempts before moving message to dead letter |
-| `MAX_MESSAGE_LENGTH` | `2000` | Maximum character length for a valid dispatch |
-| `NO_MESSAGE_WARNING_SECONDS` | `600` (10 min) | Warns if no messages seen during continuous 200 OK fetches |
-| `DRY_RUN` | `false` | When `true`, fetches & deduplicates without sending to PagerMon |
-
----
-
-## Installation & Setup
-
-### 1. Quick install with PM2 (Windows)
-
-```powershell
-git clone https://github.com/agillam69/pmon-input.git
-Set-Location pmon-input
-.\scripts\install.ps1
-```
-
-The installer creates `.env` from `.env.example` in **dry-run** mode, starts the bridge under PM2, and saves the process list. The PM2 process is named **`bridge`**.
-
-After install:
-- Set your `PAGERMON_API_KEY` in `.env` or via the web UI at `http://<host>:8585`
-- Restart the bridge: `pm2 restart bridge`
-
-### 2. Quick install with PM2 (Linux)
-
-```bash
-git clone https://github.com/agillam69/pmon-input.git
-cd pmon-input
-chmod +x scripts/install-pm2.sh
-./scripts/install-pm2.sh
-```
-
-The PM2 process is named **`bridge`**. Manage it with:
-
-```bash
-pm2 status
-pm2 logs bridge
-pm2 restart bridge
-pm2 stop bridge
-```
-
-### 3. Linux (systemd) alternative
-
-```bash
-chmod +x scripts/install.sh
-sudo ./scripts/install.sh
-sudo systemctl enable --now cfa-pagermon-bridge
-```
-
----
-
-## Updating via Git Sync
-
-To pull the latest version and restart:
-
-```bash
-cd pmon-input
-git pull
-
-# If requirements changed, update the venv
-.venv/bin/pip install -r requirements.txt
-
-# Restart the PM2 process
-pm2 restart bridge
-pm2 save
-```
-
-On Windows:
-
-```powershell
-Set-Location pmon-input
-git pull
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-pm2 restart bridge
-pm2 save
-```
-
----
-
-## CLI Options
-
-| Command | Description |
-| :--- | :--- |
-| `python -m src.cfa_pagermon_bridge.main --check` | Runs diagnostic checks on config, database, source parsing, and PagerMon endpoint |
-| `python -m src.cfa_pagermon_bridge.main --dry-run` | Runs polling loop in safe dry-run mode (no messages sent to PagerMon) |
-| `python -m src.cfa_pagermon_bridge.main --env-file /path/to/.env` | Runs with custom environment configuration file |
-| `python -m src.cfa_pagermon_bridge.main --test-delivery "TEST - CFA WEB BRIDGE - Test 1"` | Sends a single test message to PagerMon |
-| `python -m src.cfa_pagermon_bridge.main --version` | Prints version number |
-
----
-
-## Running Automated Tests
-
-Run the complete pytest suite:
-```powershell
-pytest -v
-```
-
-Test coverage includes:
-- **Parser (`test_parser.py`):** Real-world dispatches (`DROM`, `UPPE`, multi-line dispatches), HTML entity unescaping, wrapped nested span tags, layout headings rejection, and malformed/oversized content rejection.
-- **Deduplication Store (`test_store.py`):** Transactional state transitions, uniqueness constraints, process restart recovery, and dead-letter retry limits.
-- **PagerMon Delivery Adapter (`test_delivery.py`):** JSON payload construction, `apikey` authentication headers, 200 OK duplicate/filter handling, 401/403 configuration error handling, and 429/5xx retry backoff.
-- **CLI & Configuration (`test_config.py`, `test_main.py`):** Type-safe config parsing, check mode execution, and test delivery guards.
-
----
-
-## License
-
-MIT License.
+Upstream source commit: `80197e7626a71df2687ab73d735ec9ab57b5e214`.

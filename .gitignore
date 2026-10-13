@@ -1,31 +1,10 @@
-# Secrets
-.env
-bridge.env
-
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-dist/
-build/
-venv/
-.venv/
-
-# State
-data/
-*.sqlite3
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# OS
-Thumbs.db
-.DS_Store
-
-# Test
-.pytest_cache/
-htmlcov/
-.coverage
+node_modules/
+public/assets/
+config/config.json
+config/backup.json
+logs/*.log
+*.db
+*.db-*
+.env*
+coverage/
+.nyc_output/
