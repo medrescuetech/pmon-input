@@ -6,19 +6,16 @@ This branch packages upstream [pagermon/pagermon](https://github.com/pagermon/pa
 
 1. In GoDaddy **Node.js Hosting**, choose **Connect GitHub**.
 2. Select repository **medrescuetech/pmon-input**, branch **godaddy-pagermon**.
-3. Select **I need to add secrets for my app to boot**. Add:
-
-| Secret | Value |
-| --- | --- |
-| `PAGERMON_ADMIN_PASSWORD` | Your chosen strong password, at least 12 characters |
-| `PAGERMON_API_KEY` | Your chosen random key, at least 32 characters |
-| `PAGERMON_ADMIN_USER` | Optional; defaults to `admin` |
-
-4. Select **Import & Deploy**. GoDaddy installs dependencies, runs `npm run build`, then `npm start`.
-5. Open the preview URL. Sign in as `admin` (or your chosen username) using the password you set.
-6. Check `/health`: it should return `{"status":"ok"}`.
+3. Select **Import & Deploy**. No secrets are required for browser setup.
+4. Open **Runtime Logs** and find `[PagerMon] SETUP CODE:`. Copy the code; it changes when the app restarts and stops working after setup completes.
+5. Open the preview URL. Enter the code, choose your admin username/password, and leave the API key blank to generate one (or supply your own). Save the API key shown after setup.
+6. Follow the sign-in link after a few seconds. Check `/health`: it should return `{"status":"ok"}`. Before setup, health returns `{"status":"setup_required"}` and the app stays running.
 7. Before publishing, request `/assets/pagermon-private/config.json`, `/assets/pagermon-private/messages.db` and `/assets/pagermon-private/sessions.db`. Each must return **404**. The app denies the entire `/assets` URL prefix. Do not publish if a hosting-level static handler bypasses that denial; use a private persistent volume through `PAGERMON_DATA_DIR` instead.
-8. Publish when the preview checks pass. Set/check these secrets for production too if GoDaddy separates preview and live secrets.
+8. Publish when the preview checks pass. If production has separate fresh storage, complete setup there too.
+
+Optional automatic setup: set `PAGERMON_ADMIN_PASSWORD` (12 characters minimum, 72 bytes maximum), `PAGERMON_API_KEY` (32–256 characters), and optionally `PAGERMON_ADMIN_USER` (defaults to `admin`) before the first run. Missing or invalid secrets open browser setup instead of crashing. Existing stored configuration always takes precedence.
+
+If the old version logs “First run requires PAGERMON_ADMIN_PASSWORD”, use **Pull from GitHub** on branch **godaddy-pagermon**, then restart the preview. Confirm Runtime Logs show version **0.3.13-godaddy.2** and a setup code. The earlier Vite/Airo template log entries are not this fatal error: the attached failure occurs later in `node start.js` while validating first-run secrets.
 
 GoDaddy documentation: [app requirements](https://docs.developer.commerce.godaddy.com/en/docs/api-users/hosting/app-requirements), [GitHub import and persistent storage](https://www.godaddy.com/en-au/help/deploy-my-loveable-app-with-godaddy-nodejs-hosting-42981).
 
@@ -52,7 +49,7 @@ Use Node.js 20, 22 or 24:
 ```sh
 npm ci --omit=dev --omit=optional
 npm run build
-# Set PAGERMON_ADMIN_PASSWORD and PAGERMON_API_KEY in your environment first.
+# Open the local site and use the setup code from the terminal.
 npm start
 ```
 
@@ -62,6 +59,4 @@ This is a hosting compatibility port of legacy PagerMon, not a complete dependen
 
 ## Validation
 
-`npm test` runs an isolated smoke test with temporary credentials and storage. Verified on Node.js 24: database migrations, health, UI, private-data denial, unauthorized API rejection, authenticated ingestion, admin login and configuration/message/session persistence after restart. The test deletes its temporary data on completion.
-
-Upstream source commit: `80197e7626a71df2687ab73d735ec9ab57b5e214`.
+`npm test` runs an isolated smoke test with temporary credentials and storage. Verified on Node.js 24: database migrations, health, UI, private-data denial, unauthorized API rejection, authenticated ingestion, admin login and configuration/message/session persistence after restart. Tests cover both environment-secret setup and browser setup, rejection of an incorrect code/weak password, generated API keys, disabling setup after completion and restart without secrets. The tests delete their temporary data on completion.

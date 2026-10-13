@@ -1,14 +1,14 @@
 {
   "name": "pagermon-godaddy",
-  "version": "0.3.13-godaddy.1",
+  "version": "0.3.13-godaddy.2",
   "private": true,
   "license": "Unlicense",
   "scripts": {
     "start": "node start.js",
-    "test": "node scripts/smoke.js",
+    "test": "node scripts/smoke.js && node scripts/smoke-setup.js",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "build": "node --check start.js && node --check app.js"
+    "build": "node --check start.js && node --check setup.js && node --check app.js"
   },
   "dependencies": {
     "@pm2/io": "^4.3.5",
